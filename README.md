@@ -37,12 +37,10 @@ If necessary, Hottools filters the input VCF/BCF to biallelic SNVs before encodi
 
 ## Installation
 
-### Install from source
+### Install from GitHub
 
 ```bash
-git clone https://github.com/<your-username>/hottools.git
-cd hottools
-pip install -e .
+pip install git+https://github.com/eduardavaz7/hottools.git
 ```
 
 ---
