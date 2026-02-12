@@ -1,0 +1,11 @@
+Number of samples: 838
+Window: 524,288 bp
+===== Hottools run started at: Tue Feb 10 20:10:27 UTC 2026 =====
+===== Hottools run finished at: Tue Feb 10 20:10:38 UTC 2026 =====
+Elapsed time: 11 seconds
+===== bcftools consensus started at: Tue Feb 10 20:10:38 UTC 2026 =====
+===== bcftools consensus finished at: Tue Feb 10 20:34:57 UTC 2026 =====
+Elapsed time: 1459 seconds
+===== fasta to one-hot-encoded started at: Tue Feb 10 20:42:54 UTC 2026 =====
+===== fasta to one-hot-encoded finished at: Tue Feb 10 20:45:52 UTC 2026 =====
+Elapsed time: 178 seconds
