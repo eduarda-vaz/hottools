@@ -13,7 +13,7 @@ Hottools operates **exclusively on biallelic single-nucleotide variants (SNVs)**
 - REF and ALT must both be length 1  
 - Indels are excluded  
 - Multiallelic sites are excluded  
-- Duplicate positions are resolved automatically  
+- Duplicate positions are excluded  
 
 If necessary, Hottools filters the input VCF/BCF to biallelic SNVs before encoding.
 
@@ -23,7 +23,7 @@ If necessary, Hottools filters the input VCF/BCF to biallelic SNVs before encodi
 
 - Fast region extraction via `bcftools`
 - Automatic biallelic SNV filtering
-- Duplicate variant resolution (lowest missingness retained)
+- Duplicate variant positions exluded
 - Dosage-based diploid encoding
 - Optional phased haplotype separation
 - Memory-aware batching

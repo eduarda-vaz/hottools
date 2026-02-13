@@ -205,42 +205,31 @@ def has_duplicate_positions(path: str, region: Optional[str] = None) -> bool:
 
     return found_dup
 
-def dedup_vcf_to_output(
+def drop_duplicate_positions_to_output(
     in_path: str,
     out_path: str,
     region: Optional[str] = None,
 ) -> None:
     """
-    Write a deduplicated (CHROM,POS) VCF.GZ to out_path, keeping the record with
-    lowest missingness across ALL samples.
-    If region is provided, dedup is restricted to that region.
+    Write a VCF.GZ to out_path where *any* position (CHROM,POS) that appears more than once
+    is completely removed (i.e., drop all records at that position).
+
+    Assumes sorted VCF (duplicates adjacent). If region is provided, operation is restricted
+    to that region (and output contains only that region as well).
     NOTE: out_path must be different from in_path (no in-place overwrite).
     """
     if os.path.abspath(in_path) == os.path.abspath(out_path):
-        raise ValueError("dedup_vcf_to_output requires out_path != in_path (no in-place overwrite).")
-
-    def score_all_samples(line: str) -> int:
-        # Split full line so we see *all* sample columns
-        parts = line.rstrip("\n").split("\t")
-        if len(parts) <= 9:
-            return 0
-
-        miss = 0
-        # samples are columns 9..end
-        for sf in parts[9:]:
-            gt = sf.split(":", 1)[0]   # GT is first subfield
-            if "." in gt:              # "./.", ".|.", ".", "0|." etc.
-                miss += 1
-        return miss
+        raise ValueError("drop_duplicate_positions_to_output requires out_path != in_path (no in-place overwrite).")
 
     def chrom_pos_key(line: str):
-        parts0 = line.split("\t", 3)  # CHROM, POS are first two fields
-        return (parts0[0], parts0[1]) if len(parts0) >= 2 else None
+        # CHROM and POS are the first two fields
+        parts = line.split("\t", 3)
+        return (parts[0], parts[1]) if len(parts) >= 2 else None
 
     def write_line(fh, s: str):
         fh.write(s if s.endswith("\n") else s + "\n")
 
-    # Header for the exact view we will dedup
+    # Header (region-restricted if requested)
     hdr_cmd = ["view", "-h"]
     if region is not None:
         hdr_cmd += ["-r", region]
@@ -262,8 +251,8 @@ def dedup_vcf_to_output(
             tmp.write(hdr)
 
             prev_key = None
-            best_line = None
-            best_score = None
+            prev_line = None
+            prev_is_dup = False  # whether prev_key is duplicated
 
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -276,24 +265,27 @@ def dedup_vcf_to_output(
 
                 if prev_key is None:
                     prev_key = key
-                    best_line = line
-                    best_score = score_all_samples(line)
+                    prev_line = line
+                    prev_is_dup = False
                     continue
 
                 if key == prev_key:
-                    s = score_all_samples(line)
-                    if s < best_score:
-                        best_line, best_score = line, s
+                    # We saw the same position again => mark as duplicate
+                    prev_is_dup = True
                     continue
 
-                write_line(tmp, best_line)
+                # key changed: decide whether to write previous
+                if not prev_is_dup and prev_line is not None:
+                    write_line(tmp, prev_line)
 
+                # reset for new key
                 prev_key = key
-                best_line = line
-                best_score = score_all_samples(line)
+                prev_line = line
+                prev_is_dup = False
 
-            if best_line is not None:
-                write_line(tmp, best_line)
+            # flush last
+            if prev_key is not None and not prev_is_dup and prev_line is not None:
+                write_line(tmp, prev_line)
 
     finally:
         if proc.stdout:
@@ -308,6 +300,7 @@ def dedup_vcf_to_output(
                     pass
             raise RuntimeError(f"bcftools view failed (exit={rc}). stderr:\n{stderr}")
 
+    # bgzip + index
     _run_bcftools(["view", "-Oz", "-o", out_path, tmp_name])
     _run_bcftools(["index", "-t", out_path])
 
@@ -333,8 +326,8 @@ def ensure_biallelic_snps(
         bcftools view -m2 -M2 -v snps [-r region] -Oz -o <out_path> <path>
         bcftools index -t <out_path>
       and returns the filtered VCF path.
-    - ALWAYS runs a mandatory duplicate-position check and drops duplicates, keeping the record with less missingness
-    among the first 50 samples (fast heuristic).
+    - Drops duplicate positions by removing all records at 
+        any (CHROM,POS) that appears more than once.
 
     Returns: Path to a file guaranteed to be biallelic SNVs.
     If region is provided, the output will also be restricted to that region.
@@ -368,9 +361,9 @@ def ensure_biallelic_snps(
     if frac <= threshold:
         if has_duplicate_positions(path, region=region):
             logger.info(
-                "VCF contains duplicate positions. Removing duplicate positions based on missingness.",
+                "VCF contains duplicate positions. Dropping all records at duplicated (CHROM,POS) sites.",
             )
-            dedup_vcf_to_output(path, out_path, region=region)
+            drop_duplicate_positions_to_output(path, out_path, region=region)
             return out_path
         else: # returns original file 
             logger.info(
@@ -395,17 +388,14 @@ def ensure_biallelic_snps(
     # After filtering, check for duplicates
     if has_duplicate_positions(out_path):
         logger.info(
-            "VCF contains duplicate positions. Removing duplicate positions based on missingness.",
+            "VCF contains duplicate positions. Dropping all records at duplicated (CHROM,POS) sites.",
         )
-        tmp_out = out_path + ".tmp_dedup.vcf.gz"
-        dedup_vcf_to_output(out_path, tmp_out, region=None)
+        tmp_out = out_path + ".tmp_dropdup.vcf.gz"
+        drop_duplicate_positions_to_output(out_path, tmp_out, region=None)
 
         os.replace(tmp_out, out_path)
         if os.path.exists(tmp_out + ".tbi"):
             os.replace(tmp_out + ".tbi", out_path + ".tbi")
-        if os.path.exists(tmp_out + ".csi"):
-            os.replace(tmp_out + ".csi", out_path + ".csi")
-            _run_bcftools(["index", "-t", out_path])
 
     logger.info("Filtered VCF written to %s", out_path)
 
