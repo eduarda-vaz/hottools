@@ -4,7 +4,7 @@
 
 Hottools extracts biallelic single-nucleotide variants, reconstructs sample-specific sequences relative to a reference genome, and produces memory-efficient one-hot encoded arrays suitable for deep learning models (e.g., Enformer, Borzoi).
 
-### ⚠ Supported Variants
+#### ⚠ Supported Variants
 
 Hottools operates **exclusively on biallelic single-nucleotide variants (SNVs)**.
 
@@ -144,6 +144,7 @@ Order in this file defines output ordering.
 ## Performance
 
 **Runtime Comparison**
+
 Total runtime for producing 524,288 bp sequences for 838 GTEx genomes (both haplotypes).
 
 | Method                         | Time (s) | Relative Speed |
@@ -153,6 +154,7 @@ Total runtime for producing 524,288 bp sequences for 838 GTEx genomes (both hapl
 
 
 **Output Size Comparison**
+
 Output size for 524,288 bp sequences for 838 GTEx genomes (float32).
 
 | Format | Size    | Additional Runtime |
