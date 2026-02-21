@@ -4,9 +4,7 @@
 
 Hottools extracts biallelic single-nucleotide variants, reconstructs sample-specific sequences relative to a reference genome, and produces memory-efficient one-hot encoded arrays suitable for deep learning models (e.g., Enformer, Borzoi).
 
----
-
-## ⚠ Supported Variants
+### ⚠ Supported Variants
 
 Hottools operates **exclusively on biallelic single-nucleotide variants (SNVs)**.
 
@@ -23,17 +21,10 @@ If necessary, Hottools filters the input VCF/BCF to biallelic SNVs before encodi
 
 - Fast region extraction via `bcftools`
 - Automatic biallelic SNV filtering
-- Duplicate variant positions exluded
 - Dosage-based diploid encoding
 - Optional phased haplotype separation
 - Memory-aware batching
-- Multiple output formats:
-  - `.npy`
-  - `.npz`
-  - `.hdf5`
-  - `.pt` (PyTorch)
-
----
+- Multiple output formats: `.npy`, `.npz`, `.hdf5` and `.pt` (PyTorch)
 
 ## Installation
 
@@ -54,17 +45,14 @@ conda install -c bioconda bcftools
 ```
 - Indexed reference FASTA (`.fai` required)
 
-Check bcftools:
 
+## Run test suite
 ```bash
-bcftools --version
+pip install -e .[test]
+pytest
 ```
 
----
-
-# Basic Usage
-
-## Run encoding
+## Basic Usage
 
 ```bash
 hottools run \
@@ -78,9 +66,9 @@ hottools run \
 
 ---
 
-# Encoding Modes
+## Encoding Modes
 
-## Average Mode (Default)
+### Average Mode (Default)
 
 Combines diploid genotype into a dosage-based encoding.
 
@@ -92,21 +80,9 @@ Genotype mapping:
 | 0/1 | 0.5 REF + 0.5 ALT |
 | 1/1 | ALT |
 
-Output shape:
+Output shape is (S, L, 4), where **S** is the number of samples, **L** is the window length and **4** equals to A/C/G/T channels.
 
-```
-(S, L, 4)
-```
-
-Where:
-
-- **S** = number of samples  
-- **L** = window length  
-- **4** = A/C/G/T channels  
-
----
-
-## Separate Haplotype Mode
+### Separate Haplotype Mode
 
 Requires phased genotypes (`|` separator).
 
@@ -114,19 +90,9 @@ Requires phased genotypes (`|` separator).
 --haplotype-mode separate
 ```
 
-Output shape:
+Output shape is (S, 2, L, 4). Each sample produces two haplotype sequences.
 
-```
-(S, 2, L, 4)
-```
-
-Each sample produces two haplotype sequences.
-
-Unphased genotypes will raise an error in this mode.
-
----
-
-# Output Formats
+## Output Formats
 
 | Format | Description | Extra Dependency |
 |--------|------------|-----------------|
@@ -135,15 +101,8 @@ Unphased genotypes will raise an error in this mode.
 | `hdf5` | HDF5 dataset | `h5py` |
 | `pt`   | PyTorch tensor | `torch` |
 
-Example:
 
-```bash
---format hdf5
-```
-
----
-
-# Memory and Batching
+## Memory and Batching
 
 Large regions and large cohorts can require significant memory.
 
@@ -163,13 +122,9 @@ hottools run \
   --max-memory-gb 8
 ```
 
-Hottools will automatically compute a safe batch size.
+Hottools will automatically compute a safe batch size. If an out-of-memory error occurs, it can retry automatically.
 
-If an out-of-memory error occurs, it can retry automatically.
-
----
-
-# Sample Subsetting
+## Sample Subsetting
 
 To restrict processing to specific samples:
 
@@ -188,36 +143,19 @@ Order in this file defines output ordering.
 
 ---
 
-# Example: Phased Haplotypes with NPZ
+## Performance
 
-```bash
-hottools run \
-  --vcf cohort.vcf.gz \
-  --samples selected_samples.txt \
-  --region chr21:33000000-33100000 \
-  --fasta hg38.fa \
-  --haplotype-mode separate \
-  --format npz \
-```
-
----
-
-# Performance
-
-## Runtime Comparison
-
-**Total runtime for producing 524,288 bp sequences for 838 GTEx genomes (both haplotypes).**
+**Runtime Comparison**
+Total runtime for producing 524,288 bp sequences for 838 GTEx genomes (both haplotypes).
 
 | Method                         | Time (s) | Relative Speed |
 |--------------------------------|----------|----------------|
 | Bcftools consensus (.fa)       | 1459     | 133× slower    |
 | Hottools (.npy)                | 11       | 1× (baseline)  |
 
----
 
-## Output Size Comparison
-
-**Output size for 524,288 bp sequences for 838 GTEx genomes (float32).**
+**Output Size Comparison**
+Output size for 524,288 bp sequences for 838 GTEx genomes (float32).
 
 | Format | Size    | Additional Runtime |
 |--------|---------|-------------------|
@@ -228,7 +166,7 @@ hottools run \
 
 ---
 
-# Limitations
+## Limitations
 
 - Only biallelic SNVs supported
 - Indels are excluded
@@ -237,7 +175,7 @@ hottools run \
 
 ---
 
-# Command Line Help
+## Command Line Help
 
 Top-level help:
 
@@ -254,7 +192,7 @@ hottools inspect --help
 
 ---
 
-# License
+## License
 
 MIT License © 2026 Eduarda Vaz
 
@@ -262,7 +200,7 @@ See `LICENSE` file for full text.
 
 ---
 
-# Citation
+## Citation
 
 If you use Hottools in academic work, please cite:
 

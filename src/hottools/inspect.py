@@ -21,6 +21,19 @@ def _run_bcftools(args: list[str]) -> subprocess.CompletedProcess:
     result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,text=True)
     return result
 
+def assert_vcf_is_coordinate_sorted(path: str) -> None:
+    """
+    Raise ValueError if VCF/BCF is not coordinate-sorted.
+    """
+    try:
+        _run_bcftools(["index", "-n", path])
+    except subprocess.CalledProcessError as e:
+        msg = (e.stderr or "").strip()
+        raise ValueError(
+            f"Input VCF/BCF is not coordinate-sorted (required).\n"
+        ) from e
+
+
 def assert_phased_genotypes(
     vcf_path: str,
     region: str,
@@ -159,51 +172,6 @@ def inspect_vcf(
         "frac_non_snv_or_multiallelic": frac,
     }
 
-def has_duplicate_positions(path: str, region: Optional[str] = None) -> bool:
-    """
-    Fast check: stream CHROM+POS and see if any repeats.
-    Assumes sorted VCF (duplicates adjacent).
-
-    We stop early if we find a duplicate. That can cause bcftools to exit with
-    SIGPIPE (-13) or SIGTERM (-15) depending on how the process is stopped.
-    Those are not errors in this function.
-    """
-    cmd = ["bcftools", "query", "-f", "%CHROM\t%POS\n"]
-    if region is not None:
-        cmd += ["-r", region]
-    cmd.append(path)
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-    prev = None
-    found_dup = False
-    try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            cur = line.strip()
-            if cur == prev:
-                found_dup = True
-                break
-            prev = cur
-    finally:
-        # If we break early, close stdout and terminate bcftools to avoid long running.
-        if proc.stdout:
-            proc.stdout.close()
-
-        if found_dup:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-
-        stderr = proc.stderr.read() if proc.stderr else ""
-        rc = proc.wait()
-
-        # If we intentionally stopped early, accept SIGPIPE/SIGTERM
-        if rc != 0 and not (found_dup and rc in (-13, -15)):
-            raise RuntimeError(f"bcftools query failed (exit={rc}). stderr:\n{stderr}")
-
-    return found_dup
 
 def drop_duplicate_positions_to_output(
     in_path: str,
@@ -318,28 +286,19 @@ def ensure_biallelic_snps(
     region: Optional[str] = None,
 ) -> str:
     """
-    Ensure the VCF/BCF is filtered to biallelic SNVs.
-    - Runs inspect_vcf(path, region=region) to estimate fraction of non-SNV
-      or multiallelic sites.
-    - If fraction <= threshold, returns original path.
-    - Otherwise, runs bcftools to filter:
-        bcftools view -m2 -M2 -v snps [-r region] -Oz -o <out_path> <path>
-        bcftools index -t <out_path>
-      and returns the filtered VCF path.
-    - Drops duplicate positions by removing all records at 
-        any (CHROM,POS) that appears more than once.
+    Ensure the VCF/BCF is filtered to biallelic SNVs and contains no duplicate positions.
+    Duplicate positions are defined as any (CHROM,POS) appearing more than once; all such
+    records are dropped entirely.
 
-    Returns: Path to a file guaranteed to be biallelic SNVs.
+    Returns: Path to a file guaranteed to be biallelic SNVs and free of duplicated positions.
     If region is provided, the output will also be restricted to that region.
     """
 
-    # Output name (if new file is written)
     if out_dir is None:
         out_dir = os.path.dirname(path) or "."
 
     base = os.path.basename(path)
     stem = base
-
     for suffix in [".vcf.gz", ".vcf.bgz", ".vcf", ".bcf"]:
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
@@ -353,52 +312,40 @@ def ensure_biallelic_snps(
 
     out_path = os.path.join(out_dir, out_base)
 
-    # 1) Inspect and decide if SNP/biallelic filter is needed    
+    # 0) Require coordinate-sorted input
+    assert_vcf_is_coordinate_sorted(path)
+
+    # 1) Inspect for logging/diagnostics (keep your structure)
     info = inspect_vcf(path, n_check=n_check, region=region)
     frac = info["frac_non_snv_or_multiallelic"]
 
-    # 2) Either keep original or create filtered file
+    # 2) Always write a region-restricted biallelic SNV VCF to out_path
+    #    (even if frac <= threshold) so we can strictly enforce "no duplicates".
     if frac <= threshold:
-        if has_duplicate_positions(path, region=region):
-            logger.info(
-                "VCF contains duplicate positions. Dropping all records at duplicated (CHROM,POS) sites.",
-            )
-            drop_duplicate_positions_to_output(path, out_path, region=region)
-            return out_path
-        else: # returns original file 
-            logger.info(
-                "VCF appears to be only biallelic SNVs. Using original file.",
-            )
-            return path 
-    
-    # Filtering is needed
-    logger.warning(
-        "VCF contains non-SNV or multiallelic variants. Filtering to biallelic SNVs with bcftools.",
-    )
+        logger.info("VCF appears to be mostly biallelic SNVs (frac=%.4f). Still enforcing strict filtering.", frac)
+    else:
+        logger.warning(
+            "VCF contains non-SNV or multiallelic variants (frac=%.4f). Filtering to biallelic SNVs with bcftools.",
+            frac,
+        )
 
     args = ["view", "-m2", "-M2", "-v", "snps"]
     if region:
         args += ["-r", region]
     args += ["-Oz", "-o", out_path, path]
 
-    # >> Run bcftools
     _run_bcftools(args)
-    _run_bcftools(["index", "-t", out_path]) # Index by tabix
+    _run_bcftools(["index", "-t", out_path])
 
-    # After filtering, check for duplicates
-    if has_duplicate_positions(out_path):
-        logger.info(
-            "VCF contains duplicate positions. Dropping all records at duplicated (CHROM,POS) sites.",
-        )
-        tmp_out = out_path + ".tmp_dropdup.vcf.gz"
-        drop_duplicate_positions_to_output(out_path, tmp_out, region=None)
+    # 3) Always drop duplicate positions (strict behavior)
+    #    This ensures duplicated positions are removed even if detection is imperfect.
+    logger.info("Dropping any duplicated (CHROM,POS) positions (strict).")
+    tmp_out = out_path + ".tmp_dropdup.vcf.gz"
+    drop_duplicate_positions_to_output(out_path, tmp_out, region=None)
 
-        os.replace(tmp_out, out_path)
-        if os.path.exists(tmp_out + ".tbi"):
-            os.replace(tmp_out + ".tbi", out_path + ".tbi")
+    os.replace(tmp_out, out_path)
+    if os.path.exists(tmp_out + ".tbi"):
+        os.replace(tmp_out + ".tbi", out_path + ".tbi")
 
     logger.info("Filtered VCF written to %s", out_path)
-
     return out_path
-
-    

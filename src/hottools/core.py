@@ -72,6 +72,84 @@ def vcf_uses_chr_prefix(vcf_path: str) -> bool:
     raise ValueError("No variant lines found in VCF.")
 
 
+def normalize_chrom_to_vcf(chrom: str, vcf_path: str) -> str:
+    """
+    Normalize a user-provided chromosome string to match the contig naming
+    convention used in the VCF/BCF.
+    Accepts inputs like '12' or 'chr12' and returns the VCF-matching form.
+    """
+    uses_chr = vcf_uses_chr_prefix(vcf_path)
+    chrom = chrom.strip()
+
+    if uses_chr and not chrom.startswith("chr"):
+        return f"chr{chrom}"
+    if (not uses_chr) and chrom.startswith("chr"):
+        return chrom[3:]
+    return chrom
+
+
+def _first_fasta_contig_name(fasta_path: str) -> str:
+    """
+    Return the first contig name in a FASTA, preferring the .fai index if present.
+    This is O(1) I/O in practice (reads 1 line), and avoids loading the FASTA.
+    """
+    fai = fasta_path + ".fai"
+    if os.path.exists(fai):
+        with open(fai, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    return line.split("\t", 1)[0]
+        raise ValueError(f"FASTA index exists but is empty: {fai}")
+
+    with open(fasta_path, "r") as f:
+        for line in f:
+            if line.startswith(">"):
+                return line[1:].strip().split()[0]
+
+    raise ValueError(f"No FASTA header lines found in: {fasta_path}")
+
+
+def normalize_chrom_to_fasta(
+    chrom: str,
+    fasta_path: str,
+    *,
+    allow_mito_aliases: bool = True,
+) -> str:
+    """
+    Normalize a user-provided chrom string (e.g. '12' or 'chr12') to match the FASTA naming
+    convention (chr-prefixed or not), using only the FASTA's first contig header (or .fai).
+
+    This is intentionally lightweight: it infers the *style* (chr vs no-chr) rather than
+    scanning all contigs.
+
+    If allow_mito_aliases=True, it will also map M<->MT (and chrM<->chrMT) when needed.
+    """
+    chrom = chrom.strip()
+    first = _first_fasta_contig_name(fasta_path)
+    fasta_has_chr = first.startswith("chr")
+
+    # 1) Normalize chr prefix
+    if fasta_has_chr and not chrom.startswith("chr"):
+        chrom = "chr" + chrom
+    elif (not fasta_has_chr) and chrom.startswith("chr"):
+        chrom = chrom[3:]
+
+    # 2) Optional mitochondria alias normalization
+    if allow_mito_aliases:
+        mito_map = {"M": "MT", "MT": "M"}
+        # apply after prefix normalization
+        if chrom.startswith("chr"):
+            base = chrom[3:]
+            if base in mito_map:
+                chrom = "chr" + mito_map[base]
+        else:
+            if chrom in mito_map:
+                chrom = mito_map[chrom]
+
+    return chrom
+
+
 # =========================
 # memory / batching helpers
 # =========================
@@ -470,16 +548,13 @@ def run_hottools(
         raise ValueError("You must provide --vcf.")
 
     # Parse region
-    chrom, coords = region.split(":")
+    chrom_user, coords = region.split(":")
     start_str, end_str = coords.replace(",", "").split("-")
     start_1 = int(start_str)
     end_1 = int(end_str)
 
-    uses_chr = vcf_uses_chr_prefix(input_path)
-    if uses_chr and not chrom.startswith("chr"):
-        chrom = f"chr{chrom}"
-    elif not uses_chr and chrom.startswith("chr"):
-        chrom = chrom[3:]
+    chrom = normalize_chrom_to_vcf(chrom_user, input_path)
+    chrom_fa  = normalize_chrom_to_fasta(chrom_user, fasta)
     
     region_str = f"{chrom}:{start_1}-{end_1}"
     L = end_1 - start_1 + 1
@@ -544,7 +619,7 @@ def run_hottools(
     logger.info("Region %s: %d variants, window length %d bp", region_str, V, L)
 
     # 5) Load reference and precompute matrices
-    ref_window = load_reference_window(fasta, chrom, start_1, end_1)  # (L,)
+    ref_window = load_reference_window(fasta, chrom_fa, start_1, end_1)  # (L,)
     ref_onehot = encode_bases(ref_window, target_dtype)               # (L,4)
     alt_mat = encode_bases(alt_bases, target_dtype)                  # (V,4)
 
