@@ -1,0 +1,6 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=64>
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	HALF	HAP	MISSING	REF	HAP_MISSING
+chr1	5	unphased	A	C,G	60	PASS	.	GT	0/1	2/1	1/1	./1	1	./.	0/0	.

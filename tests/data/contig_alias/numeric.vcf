@@ -1,0 +1,8 @@
+##fileformat=VCFv4.2
+##contig=<ID=1,length=64>
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+1	5	snv	A	G	60	PASS	.	GT	0|1	1|1
+1	9	deletion	ACG	A	60	PASS	.	GT	0|1	0|0
+1	17	insertion	A	AT	60	PASS	.	GT	1|0	0|1

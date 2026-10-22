@@ -1,0 +1,39 @@
+name: Tests and release artifacts
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13']
+        os: [ubuntu-latest]
+        include:
+          - python: '3.12'
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      COLUMNS: '100'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev]'
+      - name: Exercise optional PyTorch output on Linux Python 3.12
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m ruff check src tests
+      - run: python -m pytest -q -ra
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Validate the source release independently of checkout helpers
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/hottools-source"
+          tar -xzf dist/hottools-*.tar.gz -C "$RUNNER_TEMP/hottools-source"
+          cd "$RUNNER_TEMP/hottools-source"/hottools-*
+          python -m pip install -e '.[test]'
+          python -m pytest -q -ra

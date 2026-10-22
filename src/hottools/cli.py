@@ -1,275 +1,525 @@
 from __future__ import annotations
 
 import argparse
-import logging
+import json
 import sys
+from pathlib import Path
 
-from .core import run_hottools
-from .inspect import ensure_biallelic_snps
+from .pipeline import RunConfig, run_hottools
+from .reference import ReferenceReader
+from .regions import parse_region, read_region_file, region_from_center
+from .writers import previous_run_outputs
 
-LOG_LEVELS = {
-    "DEBUG": logging.DEBUG,
-    "INFO": logging.INFO,
-    "WARNING": logging.WARNING,
-    "ERROR": logging.ERROR,
-    "CRITICAL": logging.CRITICAL,
-}
 
-def _add_common_logging_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "-l", "--log-level",
-        choices=LOG_LEVELS.keys(),
-        default="INFO",
-        help="Logging level (default: INFO).",
-    )
+def _parse_batch_size(value: str):
+    lower = value.lower()
+    if lower in {"auto", "none"}:
+        return lower
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "batch size must be auto, none, or a positive integer"
+        ) from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError("batch size must be >= 1")
+    return number
 
-# =========================
-# Subcommand: run
-# =========================
 
-def build_run_parser(subparsers: argparse._SubParsersAction) -> None:
-    p = subparsers.add_parser(
-        "run",
-        help="Reconstruct and one-hot encode a region (biallelic SNVs only).",
-        description=(
-            "Run Hottools on a genomic region and write one-hot encoded sequences.\n\n"
-            "Variant support:\n"
-            "  • biallelic single-nucleotide variants (SNVs) only (REF/ALT length == 1)\n"
-            "  • indels and multiallelic sites are excluded during preprocessing\n\n"
-            "Preprocessing:\n"
-            "  • filters input to biallelic SNVs using bcftools (if needed)\n"
-            "  • detects duplicate positions and keeps the record with lowest missingness\n\n"
-            "Genotype encoding:\n"
-            "  • haplotype_mode=average (default): dosage-based mixture of REF/ALT\n"
-            "  • haplotype_mode=separate: writes separate haplotypes (requires phased GT '|')\n\n"
-            "Output shapes:\n"
-            "  • average: (S, L, 4)\n"
-            "  • separate: (S, 2, L, 4)\n\n"
-            "Examples:\n"
-            "  hottools run --vcf input.bcf --region 12:31000000-31200000 --fasta hg38.fa \\\n"
-            "      --out-dir out --prefix chr12 --format npz\n\n"
-            "  hottools run --vcf input.vcf.gz --samples samples.txt --region chr21:33000000-33100000 \\\n"
-            "      --fasta hg38.fa --haplotype-mode separate --format hdf5 --max-memory-gb 8\n"
-        ),
-        epilog=(
-            "Notes:\n"
-            "  • Requires bcftools on PATH.\n"
-            "  • --format hdf5 requires h5py.\n"
-            "  • --format pt requires torch.\n"
-        ),
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
+def _load_samples(args) -> list[str] | None:
+    if args.samples and args.sample_file:
+        raise ValueError("Use either --samples or --sample-file, not both.")
 
-    # Input VCF/BCF
-    p.add_argument(
-        "-i", "--vcf",
-        type=str,
-        required=True,
-        help="Input VCF/BCF file (.vcf, .vcf.gz, .bcf). Requires bcftools on PATH.",
-    )
-    p.add_argument(
-        "-s", "--samples",
-        type=str,
-        dest="samples_file",
-        help="Optional text file with sample IDs (one per line) to subset and set ordering.",
-    )
-    p.add_argument(
-        "-r", "--region",
-        type=str,
-        required=True,
-        help="Genomic region to process: 'chr:start-end' (e.g. chr12:31000000-31200000). "
-             "Either 'chr12' or '12' is accepted (auto-normalized to match contigs).",
-    )
+    if args.samples:
+        names = [x.strip() for x in args.samples.split(",") if x.strip()]
+        if not names:
+            raise ValueError("--samples did not contain any sample IDs.")
+        return names
 
-    # Reference genome
-    p.add_argument(
-        "-f", "--fasta",
-        type=str,
-        required=True,
-        help="Reference FASTA (e.g. GRCh38.fa). Must be indexed with .fai.",
-    )
+    if args.sample_file:
+        with open(args.sample_file, encoding="utf-8") as handle:
+            names = [
+                line.strip()
+                for line in handle
+                if line.strip() and not line.startswith("#")
+            ]
+        if not names:
+            raise ValueError(f"No sample IDs found in {args.sample_file}")
+        return names
+    return None
 
-    # Genotype interpretation
-    p.add_argument(
-        "-H", "--haplotype-mode",
-        choices=["average", "separate"],
-        default="average",
-        help="average: one sequence per sample (default). separate: output two haplotypes; requires phased GT '|'.",
-    )
-
-    # Batching / memory
-    p.add_argument(
-        "-b", "--batch-size",
-        type=int,
-        default=None,
-        help="Samples per batch. If unset, Hottools tries full run unless --max-memory-gb is provided or OOM fallback is enabled.",
-    )
-    p.add_argument(
-        "-m", "--max-memory-gb",
-        type=float,
-        default=None,
-        help="Approx memory budget (GB) for automatic batch size estimation (proactive or as OOM fallback).",
-    )
-    p.add_argument(
-        "--auto-batch-on-oom",
-        dest="auto_batch_on_oom",
-        action="store_true",
-        default=True,
-        help="On OOM, automatically retry with computed batching (default: enabled).",
-    )
-    p.add_argument(
-        "--no-auto-batch-on-oom",
-        dest="auto_batch_on_oom",
-        action="store_false",
-        help="Disable automatic retry with batching on OOM.",
-    )
-    p.add_argument(
-        "--print-estimates",
-        dest="print_estimates",
-        action="store_true",
-        default=True,
-        help="Log estimated output array size before encoding (default: enabled).",
-    )
-    p.add_argument(
-        "--no-print-estimates",
-        dest="print_estimates",
-        action="store_false",
-        help="Disable logging of size estimates.",
-    )
-
-    # Output
-    p.add_argument(
-        "-o", "--out-dir",
-        type=str,
-        default=".",
-        help="Output directory (default: current directory).",
-    )
-    p.add_argument(
-        "-p", "--prefix",
-        type=str,
-        default="hottools",
-        help="Prefix for output files (default: hottools).",
-    )
-    p.add_argument(
-        "-F", "--format",
-        dest="fmt",
-        choices=["npy", "npz", "hdf5", "pt"],
-        default="npy",
-        help="Output format: npy/npz/hdf5/pt (default: npy). Note: hdf5 requires h5py; pt requires torch.",
-    )
-    p.add_argument(
-        "--per-sample",
-        action="store_true",
-        help="Write one file per sample (and per haplotype if separate) instead of a combined array.",
-    )
-    p.add_argument(
-        "-d", "--dtype",
-        choices=["float32", "float16"],
-        default="float32",
-        help="Output floating point precision (default: float32).",
-    )
-
-    _add_common_logging_args(p)
-    p.set_defaults(func=main_run)
-
-def main_run(args: argparse.Namespace) -> None:
-    logging.basicConfig(level=LOG_LEVELS[args.log_level], format="[%(levelname)s] %(message)s")
-
-    run_hottools(
-        vcf=args.vcf,
-        samples_file=args.samples_file,
-        region=args.region,
-        fasta=args.fasta,
-        haplotype_mode=args.haplotype_mode,
-        batch_size=args.batch_size,
-        max_memory_gb=args.max_memory_gb,
-        auto_batch_on_oom=args.auto_batch_on_oom,
-        print_estimates=args.print_estimates,
-        out_dir=args.out_dir,
-        prefix=args.prefix,
-        fmt=args.fmt,
-        per_sample=args.per_sample,
-        dtype=args.dtype,
-    )
-
-# =========================
-# Subcommand: inspect
-# =========================
-
-def build_inspect_parser(subparsers: argparse._SubParsersAction) -> None:
-    p = subparsers.add_parser(
-        "inspect",
-        help="Inspect a VCF/BCF and optionally write a biallelic-SNV-only VCF.",
-        description=(
-            "Inspect a VCF/BCF using bcftools and report basic properties.\n\n"
-            "Variant support (for Hottools encoding): biallelic SNVs only.\n"
-            "Non-SNV and multiallelic sites are not supported for encoding.\n\n"
-            "This command can:\n"
-            "  • estimate fraction of non-SNV/multiallelic records\n"
-            "  • detect duplicate positions (CHROM,POS)\n"
-            "  • write a filtered VCF restricted to biallelic SNVs (optionally in a region)\n"
-            "  • deduplicate by keeping the record with lowest missingness\n\n"
-            "Examples:\n"
-            "  hottools inspect --vcf input.bcf\n"
-            "  hottools inspect --vcf input.vcf.gz --region chr12:31000000-31200000 --out-dir out\n"
-        ),
-        epilog=(
-            "Notes:\n"
-            "  • Requires bcftools on PATH.\n"
-            "  • Filtering writes a new .vcf.gz file with tabix index.\n"
-        ),
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
-
-    p.add_argument("-i", "--vcf", type=str, required=True, help="Input VCF/BCF file (.vcf, .vcf.gz, .bcf).")
-    p.add_argument("-r", "--region", type=str, default=None, help="Optional region 'chr:start-end' to restrict inspection/filtering.")
-    p.add_argument("-n", "--n-check", type=int, default=2000, help="Number of variant records to inspect (default: 2000).")
-    p.add_argument("-t", "--threshold", type=float, default=0.01, help="Filter if fraction non-SNV/multiallelic > threshold (default: 0.01).")
-    p.add_argument("-o", "--out-dir", type=str, default=None, help="Directory for filtered VCF (default: same directory as input).")
-
-    _add_common_logging_args(p)
-    p.set_defaults(func=main_inspect)
-
-def main_inspect(args: argparse.Namespace) -> None:
-    logging.basicConfig(level=LOG_LEVELS[args.log_level], format="[%(levelname)s] %(message)s")
-
-    final_path = ensure_biallelic_snps(
-        path=args.vcf,
-        out_dir=args.out_dir,
-        n_check=args.n_check,
-        threshold=args.threshold,
-        region=args.region,
-    )
-    print(final_path)
-
-# =========================
-# Top-level entry point
-# =========================
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hottools",
         description=(
-            "Hottools: Fast reconstruction and one-hot encoding of personalized genomic sequences from VCF/BCF.\n\n"
-            "⚠ Supported variants: biallelic SNVs only. Indels and multiallelic sites are filtered.\n"
-            "Requires bcftools to be installed and available on PATH."
+            "Fast individualized one-hot DNA sequence generation "
+            "directly from indexed VCF/BCF."
         ),
-        formatter_class=argparse.RawTextHelpFormatter,
     )
-    subparsers = parser.add_subparsers(
-        title="subcommands",
-        dest="subcommand",
-        metavar="<command>",
-        required=True,
+
+    parser.add_argument("vcf", help="Indexed VCF.gz or BCF")
+    parser.add_argument("--reference", required=True, help="Reference FASTA")
+    parser.add_argument("-o", "--output", required=True)
+
+    region_group = parser.add_mutually_exclusive_group(required=True)
+    region_group.add_argument("--region", help="CHROM:START-END, 1-based inclusive")
+    region_group.add_argument(
+        "--region-file",
+        help=(
+            "One region per line. --output is treated as a directory. "
+            "See --region-file-format."
+        ),
     )
-    build_run_parser(subparsers)
-    build_inspect_parser(subparsers)
+    region_group.add_argument(
+        "--center",
+        help="CHROM:POS; requires --length",
+    )
+    parser.add_argument(
+        "--length",
+        type=int,
+        help="Window length in bp; only valid with --center",
+    )
+    parser.add_argument(
+        "--region-file-format",
+        choices=["auto", "1based", "bed"],
+        default="auto",
+        help=(
+            "Coordinate convention for --region-file. '1based' is "
+            "CHROM START END [STRAND], fully closed (same as --region); "
+            "'bed' is 0-based half-open with strand in column 6. "
+            "'auto' picks 'bed' for .bed/.bed.gz and '1based' otherwise."
+        ),
+    )
+
+    parser.add_argument(
+        "--mode",
+        choices=["dosage", "haplotypes", "consensus"],
+        default="dosage",
+        help=(
+            "dosage: S x L x 4 with heterozygotes split 0.5/0.5. "
+            "haplotypes: S x 2 x L x 4. "
+            "consensus: S x L x 4 carrying one allele per sample, "
+            "heterozygotes collapsed per --het-policy."
+        ),
+    )
+    parser.add_argument(
+        "--het-policy",
+        choices=["reference", "alternate", "major"],
+        default="alternate",
+        help=(
+            "--mode consensus only: which allele to use at heterozygous "
+            "sites. 'major' uses the more frequent allele among the "
+            "selected samples."
+        ),
+    )
+    parser.add_argument(
+        "--format",
+        choices=["npy", "npz", "h5", "pt"],
+        default="npy",
+    )
+    parser.add_argument("--per-sample", action="store_true")
+    parser.add_argument(
+        "--dtype",
+        choices=["float32", "float16"],
+        default="float32",
+    )
+    parser.add_argument(
+        "--output-layout",
+        choices=["samples_first", "channels_first"],
+        default="samples_first",
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=_parse_batch_size,
+        default="auto",
+        help="auto, none, or positive integer",
+    )
+    parser.add_argument(
+        "--memory-fraction",
+        type=float,
+        default=0.40,
+        help="Fraction of currently available RAM usable by one output batch.",
+    )
+    parser.add_argument("--threads", type=int)
+    parser.add_argument(
+        "--contig-alias-policy", choices=["exact", "auto"], default="exact",
+        help="Require exact contig names (default), or resolve unique standard aliases."
+    )
+
+    parser.add_argument("--samples", help="Comma-separated VCF sample IDs")
+    parser.add_argument("--sample-file", help="One VCF sample ID per line")
+
+    parser.add_argument(
+        "--missing-policy",
+        choices=["zero", "reference", "error"],
+        default="zero",
+    )
+    parser.add_argument(
+        "--unphased-policy",
+        choices=["error", "missing", "random"],
+        default="error",
+        help=("Unphased heterozygotes in haplotype mode: error, missing, "
+              "or seeded random pseudo-phasing."),
+    )
+    parser.add_argument(
+        "--random-seed", type=int,
+        help="Required with --unphased-policy random; integer from 0 through 2**64-1.",
+    )
+    parser.add_argument(
+        "--ref-mismatch-policy",
+        choices=["error", "skip", "warn"],
+        default="error",
+    )
+    parser.add_argument(
+        "--ambiguous-ref-policy",
+        choices=["error", "skip", "warn"],
+        default="error",
+    )
+    parser.add_argument(
+        "--haploid-policy",
+        choices=["duplicate", "blank", "error", "skip"],
+        default="duplicate",
+        help=(
+            "What the second haplotype track carries for a haploid call "
+            "(chrX/chrY/chrM). 'duplicate' copies the single allele onto "
+            "it, 'blank' leaves it empty; 'error'/'skip' reject the "
+            "record. Dosage and consensus are ploidy-aware and are not "
+            "affected by duplicate/blank. Either way a message is printed "
+            "and per-sample ploidy is recorded in the metadata."
+        ),
+    )
+    parser.add_argument(
+        "--ploidy-policy",
+        choices=["error", "skip"],
+        default="error",
+        help="What to do with records whose ploidy is greater than two.",
+    )
+
+    site = parser.add_argument_group("site filters")
+    site.add_argument(
+        "--pass-only",
+        action="store_true",
+        help="Keep only records whose FILTER column is PASS or '.'.",
+    )
+    site.add_argument(
+        "--min-qual",
+        type=float,
+        help="Drop records whose QUAL is below this value, or absent.",
+    )
+    site.add_argument(
+        "--min-af",
+        type=float,
+        help="Drop records whose alternate allele frequency is below this.",
+    )
+    site.add_argument(
+        "--max-af",
+        type=float,
+        help="Drop records whose alternate allele frequency is above this.",
+    )
+    site.add_argument(
+        "--af-source",
+        choices=["auto", "info", "samples"],
+        default="auto",
+        help=(
+            "Where allele frequency comes from: the INFO/AF field, the "
+            "selected samples, or 'auto' (INFO/AF when the record has it, "
+            "otherwise the samples)."
+        ),
+    )
+    classes = parser.add_argument_group(
+        "variant classes",
+        "By default only single-nucleotide substitutions are applied. "
+        "Length-changing classes require --mode haplotypes.",
+    )
+    classes.add_argument(
+        "--variant-classes",
+        default="snv",
+        metavar="LIST",
+        help=(
+            "Comma-separated variant classes to apply: snv, mnv, del, ins, "
+            "symbolic-del. Shorthands: 'indel' = del,ins; 'all' = every "
+            "supported class. SNVs are always included. Default: snv."
+        ),
+    )
+    classes.add_argument(
+        "--biallelic-only",
+        action="store_true",
+        help="Exclude records with more than one ALT allele.",
+    )
+    classes.add_argument(
+        "--mixed-record-policy",
+        choices=("exclude", "apply-selected"),
+        default="exclude",
+        help=(
+            "Exclude records containing unrequested classes (default), "
+            "or apply only selected alleles."
+        ),
+    )
+    classes.add_argument(
+        "--overlap-policy",
+        choices=("first", "error"),
+        default="first",
+        help=(
+            "Records that claim the same reference bases on one haplotype: "
+            "'first' applies the first in POS order and sets the rest aside, "
+            "as bcftools consensus does (default); 'error' refuses the run "
+            "before anything is written."
+        ),
+    )
+    classes.add_argument(
+        "--anchor-deletion-policy",
+        choices=("right", "error"),
+        default="right",
+        help=(
+            "When a deletion removes the anchor base itself: 'right' pins "
+            "the first surviving base after it (default); 'error' refuses "
+            "the run."
+        ),
+    )
+    classes.add_argument(
+        "--anchor",
+        default="start",
+        metavar="SPEC",
+        help=(
+            "Reference position pinned to a fixed output offset once "
+            "length-changing edits move sequence around: 'start' (default), "
+            "'center', or a 1-based coordinate inside the region."
+        ),
+    )
+
+    site.add_argument(
+        "--mask",
+        help=(
+            "BED (or 1-based) file of intervals to blank out: their "
+            "reference channels are zeroed and variants there are dropped."
+        ),
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=("Escalate empty-region and split-multiallelic warnings to errors."),
+    )
+
+    parser.add_argument(
+        "--strand",
+        choices=["+", "-"],
+        default="+",
+        help=(
+            "Output orientation; '-' reverse-complements. Applies to "
+            "regions that do not carry their own strand column."
+        ),
+    )
+
+    parser.add_argument(
+        "--h5-compression",
+        choices=["gzip", "lzf", "none"],
+        default="none",
+    )
+    parser.add_argument(
+        "--h5-chunk-samples",
+        type=int,
+        help="Override the automatic HDF5 chunk size along the sample axis.",
+    )
+    parser.add_argument(
+        "--h5-chunk-length",
+        type=int,
+        help="Override the automatic HDF5 chunk size along the sequence axis.",
+    )
+
+    parser.add_argument(
+        "--overwrite",
+        choices=["error", "replace"],
+        default="error",
+        help=(
+            "What to do when an output file already exists. The default "
+            "refuses rather than silently replacing a previous run."
+        ),
+    )
+    parser.add_argument(
+        "--no-metadata-json",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Inspect/filter VCF and report expected output/memory "
+            "without constructing sequence tensors."
+        ),
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show the full traceback instead of a one-line error.",
+    )
+
     return parser
 
-def main(argv: list[str] | None = None) -> None:
-    argv = sys.argv[1:] if argv is None else argv
-    args = build_parser().parse_args(argv)
-    args.func(args)
+
+def _regions_from_args(args):
+    """Resolve the region selection, with --strand as the default strand."""
+    if args.region:
+        if args.length is not None:
+            raise ValueError("--length is only valid together with --center")
+        return [parse_region(args.region, args.strand)]
+    if args.region_file:
+        if args.length is not None:
+            raise ValueError("--length is only valid together with --center")
+        return read_region_file(
+            args.region_file,
+            default_strand=args.strand,
+            coordinate_system=args.region_file_format,
+        )
+    if args.center:
+        if args.length is None:
+            raise ValueError("--center requires --length")
+        return [region_from_center(args.center, args.length, args.strand)]
+    raise ValueError("No region supplied.")
+
+
+def _output_path_for(args, region, as_directory: bool) -> Path:
+    if not as_directory:
+        return Path(args.output)
+    # Not created here: a run that is refused must not leave even an
+    # empty directory behind. The writer creates it when it commits.
+    out_dir = Path(args.output)
+    safe = f"{region.chrom}_{region.start}_{region.end}".replace("/", "_").replace(
+        ":", "_"
+    )
+    if region.strand == "-":
+        safe += "_minus"
+    if args.per_sample:
+        return out_dir / safe
+    return out_dir / f"{safe}.{args.format}"
+
+
+def _preflight_regions(args, regions, outputs) -> None:
+    """
+    Check every region's output before the first region runs.
+
+    Each region is its own transaction, so without this a region file
+    whose third region conflicts would stop after committing the first
+    two. Two regions that map to the same output name would also
+    overwrite each other.
+    """
+    seen: dict[str, object] = {}
+    for region, output in zip(regions, outputs, strict=True):
+        key = str(output).casefold()
+        if key in seen:
+            raise ValueError(
+                f"Regions {seen[key].label} and {region.label} would both "
+                f"write {output}; remove the duplicate line from the "
+                "region file."
+            )
+        seen[key] = region
+    if args.overwrite != "error":
+        return
+    conflicts = [
+        path
+        for output in outputs
+        for path in previous_run_outputs(output, args.format, args.per_sample)
+    ]
+    if conflicts:
+        shown = ", ".join(str(p) for p in conflicts[:5])
+        more = f" and {len(conflicts) - 5} more" if len(conflicts) > 5 else ""
+        raise FileExistsError(
+            f"Output already exists: {shown}{more}. No region was written; "
+            "pass --overwrite replace to replace the earlier run, or "
+            "choose another output path."
+        )
+
+
+def run(args) -> list[dict]:
+    """Execute a parsed argument namespace; raises on any failure."""
+    samples = _load_samples(args)
+    regions = _regions_from_args(args)
+
+    h5_compression = None if args.h5_compression == "none" else args.h5_compression
+    # A region file always writes into a directory, even when it holds a
+    # single region, so the output layout does not change with its length.
+    as_directory = bool(args.region_file)
+    outputs = [_output_path_for(args, r, as_directory) for r in regions]
+    _preflight_regions(args, regions, outputs)
+
+    configs = []
+    for region, output in zip(regions, outputs, strict=True):
+        config = RunConfig(
+            vcf_path=args.vcf,
+            fasta_path=args.reference,
+            region=region,
+            output_path=str(output),
+            mode=args.mode,
+            output_format=args.format,
+            per_sample=args.per_sample,
+            dtype=args.dtype,
+            output_layout=args.output_layout,
+            batch_size=args.batch_size,
+            memory_fraction=args.memory_fraction,
+            threads=args.threads,
+            contig_alias_policy=args.contig_alias_policy,
+            samples=samples,
+            missing_policy=args.missing_policy,
+            unphased_policy=args.unphased_policy,
+            random_seed=args.random_seed,
+            ref_mismatch_policy=args.ref_mismatch_policy,
+            ambiguous_ref_policy=args.ambiguous_ref_policy,
+            haploid_policy=args.haploid_policy,
+            ploidy_policy=args.ploidy_policy,
+            variant_classes=args.variant_classes,
+            biallelic_only=args.biallelic_only,
+            mixed_record_policy=args.mixed_record_policy,
+            anchor=args.anchor,
+            overlap_policy=args.overlap_policy,
+            anchor_deletion_policy=args.anchor_deletion_policy,
+            het_policy=args.het_policy,
+            pass_only=args.pass_only,
+            min_qual=args.min_qual,
+            min_af=args.min_af,
+            max_af=args.max_af,
+            af_source=args.af_source,
+            mask_path=args.mask,
+            h5_compression=h5_compression,
+            h5_chunk_samples=args.h5_chunk_samples,
+            h5_chunk_length=args.h5_chunk_length,
+            metadata_json=not args.no_metadata_json,
+            dry_run=args.dry_run,
+            strict=args.strict,
+            overwrite=args.overwrite,
+            reference_reader=None,
+        )
+        config.validate()
+        configs.append(config)
+    all_results = []
+    with ReferenceReader(args.reference) as reader:
+        for config in configs:
+            config.reference_reader = reader
+            all_results.append(run_hottools(config))
+    return all_results
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        all_results = run(args)
+    except (ValueError, OSError, RuntimeError, KeyError) as exc:
+        if args.debug:
+            raise
+        print(f"hottools: error: {exc}", file=sys.stderr)
+        return 2
+
+    print(
+        json.dumps(
+            all_results[0] if len(all_results) == 1 else all_results,
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,20 +1,14 @@
-# Python build artifacts
 __pycache__/
 *.py[cod]
-*.so
-
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
 build/
 dist/
-*.egg-info/
-src/*.egg-info/
-src/hottools.egg-info/
-
-# Virtual envs
 .venv/
 venv/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# OS junk
 .DS_Store
+*.hottools-partial/
+.hottools-*.publish-lock/

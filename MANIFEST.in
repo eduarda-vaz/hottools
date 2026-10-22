@@ -1,0 +1,9 @@
+include README.md LICENSE
+recursive-include tests *.py *.md *.vcf *.fa *.fasta *.bed *.json
+recursive-include validation *.py *.md
+recursive-include .github *.yml
+prune build
+prune dist
+prune .pytest_cache
+prune .ruff_cache
+global-exclude __pycache__ *.py[cod] .DS_Store

@@ -1,39 +1,81 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hottools"
-version = "0.1.0"
-description = "Fast one-hot encoding of personalized genomic sequences."
+version = "1.0.0"
+description = "Fast individualized DNA sequence encoding directly from VCF/BCF."
 readme = "README.md"
-requires-python = ">=3.9"
-authors = [{ name = "Eduarda Vaz", email = "evaz2@jh.edu"}]
+requires-python = ">=3.10"
 license = "MIT"
-
+license-files = ["LICENSE"]
+authors = [
+  {name = "Eduarda Vaz"}
+]
+keywords = ["genomics", "vcf", "one-hot", "deep-learning", "haplotypes"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Typing :: Typed",
+]
 dependencies = [
-  "numpy>=1.21",
-  "pandas>=1.5",
-  "pyfaidx>=0.7",
+  "numpy>=1.24",
+  "cyvcf2>=0.31",
+  "pyfaidx>=0.8",
 ]
 
 [project.optional-dependencies]
+mem = ["psutil>=5.9"]
+hdf5 = ["h5py>=3.8"]
 torch = ["torch"]
-hdf5  = ["h5py>=3.8"]
-mem   = ["psutil>=5.9"]
-dev   = ["pytest", "ruff", "build", "twine"]
+all = [
+  "psutil>=5.9",
+  "h5py>=3.8",
+  "torch",
+]
+test = ["pytest>=8", "psutil>=5.9", "h5py>=3.8", "pysam>=0.22"]
+dev = [
+  "pytest>=8",
+  "psutil>=5.9",
+  "h5py>=3.8",
+  "pysam>=0.22",
+  "ruff>=0.6",
+  "build",
+  "twine",
+]
 
 [project.scripts]
 hottools = "hottools.cli:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-license-files = ["LICENSE"]
+[project.urls]
+Homepage = "https://github.com/eduarda-vaz/hottools"
+Repository = "https://github.com/eduarda-vaz/hottools"
+Issues = "https://github.com/eduarda-vaz/hottools/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[project.urls]
-Homepage = "https://github.com/eduardavaz7/hottools"
-Repository = "https://github.com/eduardavaz7/hottools"
-Issues = "https://github.com/eduardavaz7/hottools/issues"
+[tool.setuptools.package-data]
+hottools = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test helpers build kwargs dicts for readability and run slightly long.
+"tests/*" = ["C408", "E501"]

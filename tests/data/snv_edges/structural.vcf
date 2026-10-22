@@ -1,0 +1,12 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=64>
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4
+chr1	5	insertion	A	AT	60	PASS	.	GT	1|0	0|1	1|1	0|0
+chr1	13	deletion	ACG	A	60	PASS	.	GT	1|0	0|1	1|1	0|0
+chr1	21	mnv	AC	GT	60	PASS	.	GT	1|0	0|1	1|1	0|0
+chr1	29	symbolic_deletion	A	<DEL>	60	PASS	END=32	GT	1|0	0|1	1|1	0|0
+chr1	37	mixed_snv_insertion	A	C,AT	60	PASS	.	GT	1|2	2|1	2|2	0|0
+chr1	45	unsupported_insertion	A	<INS>	60	PASS	.	GT	1|1	1|1	1|1	1|1
+chr1	49	unsupported_breakend	A	A]chr1:61]	60	PASS	.	GT	1|1	1|1	1|1	1|1
