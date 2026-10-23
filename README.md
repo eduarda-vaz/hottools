@@ -97,11 +97,11 @@ Regions may have different lengths, but share the same sample selection, filters
 
 Channels always follow **A, C, G, T**. Let `S` be sample count and `L` output length. The examples below assume REF=A and ALT=G.
 
-| Mode | Default shape | Interpretation | Example |
+| Mode | Interpretation | Example: REF=A, ALT=G | Default shape |
 | --- | --- | --- | --- |
-| `dosage` (default) | `S × L × 4` | Mean allele contribution. Phase is not needed. | 0/0 → [1,0,0,0]; 0/1 → [0.5,0,0.5,0]; 1/1 → [0,0,1,0] |
-| `haplotypes` | `S × 2 × L × 4` | One track per haplotype. Heterozygotes require phase unless an explicit unphased policy is selected. | 0|1 → [1,0,0,0] on track 1 and [0,0,1,0] on track 2; 1|0 reverses these assignments. |
-| `consensus` | `S × L × 4` | One chosen allele per sample; heterozygotes follow `--het-policy`. | For 0/1, default alternate → [0,0,1,0]; reference → [1,0,0,0]; major chooses according to allele frequency among selected samples. |
+| `dosage` (default) | Mean allele contribution. Phase is not needed. | `0/0` → `[1,0,0,0]`; `0/1` → `[0.5,0,0.5,0]`; `1/1` → `[0,0,1,0]`. | `S × L × 4` |
+| `haplotypes` | One track per haplotype. Unphased heterozygotes require an explicit policy. | `0\|1` → `[1,0,0,0]` on track 1 and `[0,0,1,0]` on track 2; `1\|0` reverses these assignments. | `S × 2 × L × 4` |
+| `consensus` | One selected allele per position and sample; heterozygotes follow `--het-policy`. | For `0/1`, `alternate` (default) → `[0,0,1,0]`; `reference` → `[1,0,0,0]`; `major` selects the more frequent allele among selected samples. | `S × L × 4` |
 
 ### Pseudo-haplotypes
 In `haplotypes` mode, a VCF may contain both phased and unphased genotypes. Phased calls retain their allele order. Unphased heterozygotes raise an error by default; `--unphased-policy missing` treats them as missing and applies `--missing-policy`, while `--unphased-policy random --random-seed 42` assigns their alleles reproducibly between the two tracks. 
