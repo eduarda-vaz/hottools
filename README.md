@@ -97,7 +97,7 @@ Regions may have different lengths, but share the same sample selection, filters
 
 Channels always follow **A, C, G, T**. Let `S` be sample count and `L` output length.
 
-| Mode | Interpretation | Example: REF=A, ALT=G | Default output array shape |
+| Mode | Interpretation | Example: REF=A, ALT=G | Default shape |
 | --- | --- | --- | --- |
 | `dosage` (default) | Mean allele contribution. Phase is not needed. | `0/0` → `[1,0,0,0]`; `0/1` → `[0.5,0,0.5,0]`; `1/1` → `[0,0,1,0]`. | `S × L × 4` |
 | `haplotypes` | One track per haplotype. Unphased heterozygotes require an explicit policy. | `0\|1` → `[1,0,0,0]` on track 1 and `[0,0,1,0]` on track 2; `1\|0` reverses these assignments. | `S × 2 × L × 4` |
