@@ -95,13 +95,13 @@ Regions may have different lengths, but share the same sample selection, filters
 
 ## Modes and output arrays
 
-Channels always follow **A, C, G, T**. Let `S` be sample count and `L` output length.
+Channels always follow **A, C, G, T**. Let `S` be sample count and `L` output length. The examples below assume REF=A and ALT=G.
 
-| Mode | Default shape | Interpretation |
-| --- | --- | --- |
-| `dosage` (default) | `S × L × 4` | Mean allele contribution; diploid A/G is `[0.5, 0, 0.5, 0]`. Phase is not needed. |
-| `haplotypes` | `S × 2 × L × 4` | One track per haplotype. Heterozygotes require phase unless an explicit unphased policy is selected. |
-| `consensus` | `S × L × 4` | One chosen allele per sample; heterozygotes follow `--het-policy`. |
+| Mode | Default shape | Interpretation | Example |
+| --- | --- | --- | --- |
+| `dosage` (default) | `S × L × 4` | Mean allele contribution. Phase is not needed. | 0/0 → [1,0,0,0]; 0/1 → [0.5,0,0.5,0]; 1/1 → [0,0,1,0] |
+| `haplotypes` | `S × 2 × L × 4` | One track per haplotype. Heterozygotes require phase unless an explicit unphased policy is selected. | 0|1 → [1,0,0,0] on track 1 and [0,0,1,0] on track 2; 1|0 reverses these assignments. |
+| `consensus` | `S × L × 4` | One chosen allele per sample; heterozygotes follow `--het-policy`. | For 0/1, default alternate → [0,0,1,0]; reference → [1,0,0,0]; major chooses according to allele frequency among selected samples. |
 
 ### Pseudo-haplotypes
 In `haplotypes` mode, a VCF may contain both phased and unphased genotypes. Phased calls retain their allele order. Unphased heterozygotes raise an error by default; `--unphased-policy missing` treats them as missing and applies `--missing-policy`, while `--unphased-policy random --random-seed 42` assigns their alleles reproducibly between the two tracks. 
@@ -109,9 +109,14 @@ In `haplotypes` mode, a VCF may contain both phased and unphased genotypes. Phas
 When random assignment is used, these mixed tracks contain known phase where available and arbitrary assignments elsewhere, so they should be described as pseudo-haplotypes, not fully phased biological sequences. Hottools does not infer phase or establish continuity between separate phase blocks.
 
 ### Consensus encoding policy
-Consensus produces one sequence per sample, rather than preserving both haplotypes. At heterozygous sites, `--het-policy alternate` (default) selects ALT when present, `--het-policy reference` selects REF, and `--het-policy major` selects the more frequent of the called alleles among the selected samples. This output does not preserve both haplotypes.
+
+Consensus encoding produces one sequence per sample by selecting a single allele at heterozygous sites. It provides binary channel values of 0 or 1, avoiding the fractional values used in dosage encoding, for downstream models or workflows that require discrete nucleotide inputs. This representation does not preserve both alleles of a heterozygous genotype.
+
+At heterozygous sites, `--het-policy alternate` (default) selects ALT when present, `--het-policy reference` selects REF, and `--het-policy major` selects the more frequent of the called alleles among the selected samples. This output does not preserve both haplotypes.
 
 Frequency ties choose the lower allele index. For a `1|2` genotype, both reference and alternate select the lower-indexed ALT because no REF allele is present.
+
+
 
 ### Unknown or missing bases 
 An all-zero vector `[0, 0, 0, 0]` represents unknown or masked sequence, not a fifth nucleotide. Missing alleles contribute zeros by default. Add `--missing-policy reference` when filling missing calls with the REF is appropriate for the analysis.
