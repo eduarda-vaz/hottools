@@ -79,7 +79,7 @@ Samtools and bcftools are useful for input preparation and validation but are no
 
 ### Selecting regions 
 
-Hottools requires a region selection; it does not reconstruct the whole VCF by default. Use `--region CHROM:START-END` for one interval with 1-based inclusive coordinates; `--center CHROM:POS --length L` for a window around a reference position; or `--region-file FILE` for multiple intervals processed separately in one run. These options cannot be used together.
+Hottools requires a region selection; it does not reconstruct the whole VCF by default. Use `--region CHROM:START-END` for one interval with 1-based inclusive coordinates; `--center CHROM:POS --length L` for a window around a reference position; or `--region-file FILE` for multiple intervals processed separately in one run. These options cannot be used together. The interval coordinates must refer to the same genome assembly as the FASTA and VCF/BCF.
 
 Region files ending in `.bed`, `.bed.gz` or `.bed.bgz` are automatically read as 0-based, half-open BED intervals. Other filenames default to 1-based inclusive coordinates. Use `--region-file-format bed` or `--region-file-format 1based` to specify the convention explicitly. 
 
